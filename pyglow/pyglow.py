@@ -578,6 +578,148 @@ class Point(object):
 
         return self
 
+class iriPoint(Point):
+    def __init__(self, *args):
+        if type(args[0]) is Point:
+            self.__dict__ = args[0].__dict__.copy()
+
+        else:
+            super(iriPoint, self).__init__(*args[:4])
+
+
+    def run_iri(
+        self,
+        NmF2=None,
+        hmF2=None,
+        version=2016,
+        compute_Ne=True,
+        compute_Te_Ti=False,
+        compute_Ni=False,
+        debug=False,
+        Rz12=None,
+        F107_81=None
+    ):
+        """ Overrides Point class's run_iri method.
+        Accepts user provided solar indices.
+        Outputs densities in m^-3"""
+        if version==2016:
+            iri_data_stub = 'iri16_data/'
+            iri = iri16
+            init_iri = Point.init_iri16
+        elif version==2012:
+            iri_data_stub = 'iri12_data/'
+            iri = iri12
+            init_iri = lambda: False
+        else:
+            raise ValueError(
+                "Invalid version of {} for IRI.\n".format(version) + \
+                        "Either 2016 (default) or 2012 is valid."
+            )
+
+        if debug:
+            print("Version = {}".format(version))
+
+        jf = np.ones((50,)) # JF switches
+        # Standard IRI model flags
+        #             | FORTRAN Index
+        #             |
+        #             V
+        jf[3]  = 0 #  4 B0,B1 other model-31
+        jf[4]  = 0 #  5  foF2 - URSI
+        jf[5]  = 0 #  6  Ni - RBV-10 & TTS-03
+        jf[20] = 0 # 21 ion drift not computed
+        jf[22] = 0 # 23 Te_topside (TBT-2011)
+        jf[27] = 0 # 28 spreadF prob not computed
+        jf[28] = 0 # 29 (29,30) => NeQuick
+        jf[29] = 0 # 30
+        jf[32] = 0 # 33 Auroral boundary model off
+                   #    (Brian found a case that stalled IRI when on)
+        jf[34] = 0 # 35 no foE storm update
+
+        # Not standard, but outputs same as values as standard so not an issue
+        jf[21] = 0 # 22 ion densities in m^-3 (not %)
+        jf[33] = 0 # 34 turn messages off
+
+
+        if not compute_Ne:
+            jf[0] = 0
+
+        if not compute_Te_Ti:
+            jf[1] = 0
+
+        if not compute_Ni:
+            jf[2] = 0
+
+        oarr = np.zeros((100,))
+
+        if NmF2 is not None:
+            # use specified F2 peak density
+            jf[7] = 0
+            oarr[0] = NmF2 * 100.**3  # IRI expects [m^{-3}]
+
+        if hmF2 is not None:
+            # use specified F2 peak height
+            jf[8] = 0
+            oarr[1] = hmF2
+
+        #tpl2go Modification here
+        if F107_81 is not None:
+            jf[31] = 0
+            oarr[45] = F107_81
+        if Rz12 is not None:
+            jf[16] = 0
+            oarr[32] = Rz12
+
+        my_pwd = os.getcwd()
+
+        iri_data_path = os.path.join(DIR_FILE, iri_data_stub)
+        if debug:
+            print("Changing directory to {}\n".format(iri_data_path))
+
+        os.chdir(iri_data_path)
+        init_iri()
+        outf = iri(
+            jf,
+            0,
+            self.lat,
+            self.lon,
+            int(self.dn.year),
+            -self.doy,
+            (self.utc_sec/3600.+25.),
+            self.alt,
+            self.alt+1,
+            1,
+            oarr,
+        )
+        os.chdir(my_pwd)
+
+        if compute_Te_Ti:
+            self.Te = outf[3,0] # Electron temperature from IRI (K)
+            self.Ti = outf[2,0] # Ion temperature from IRI (K)
+        else:
+            self.Te = float('NaN')
+            self.Ti = float('NaN')
+
+        self.Tn_iri = outf[1,0] # Neutral temperature from IRI (K)
+
+        self.ne        = outf[0,0] # Electron density (m^-3)
+        self.ni['O+']  = outf[4,0] # O+ Density (%, or m^-3 with JF(22) = 0)
+        self.ni['H+']  = outf[5,0] # H+ Density (%, or m^-3 with JF(22) = 0)
+        self.ni['HE+'] = outf[6,0] # HE+ Density (%, or m^-3 with JF(22) = 0)
+        self.ni['O2+'] = outf[7,0] # O2+ Density (%, or m^-3 with JF(22) = 0)
+        self.ni['NO+'] = outf[8,0] # NO+ Density (%, or m^-3 with JF(22) = 0)
+
+        self.NmF2 = oarr[0]
+        self.hmF2 = oarr[1]
+
+        if compute_Ne:
+            self.ne    = outf[0,0] # Electron density (m^-3)
+        else:
+            self.ne    = float('NaN')
+
+        return self
+
+
 # ---------
 
 def _igrf_tracefield(dn, lat, lon, alt, target_ht, step):
